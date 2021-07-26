@@ -18,6 +18,8 @@ from pathlib import Path
 from sklearn.feature_extraction.text import CountVectorizer
 from collections import Counter
 from sklearn import preprocessing
+from pywaffle import Waffle
+import seaborn as sns
 
 
 def directory_manipulation(path):
@@ -26,12 +28,9 @@ def directory_manipulation(path):
     os.mkdir(path)
 
 
-def decision_function_edges(value, margin_b):
-    return value + margin_b
-
-
 def decision_function_nodes(value):
-    return 1 / (1 + pow(2 * math.e * value, math.e))
+    # return 1 - (1 / (1 + 10 * pow(10, -2 * value)))
+    return 1 / pow(10, value)
 
 
 class MyGraphManager:
@@ -51,6 +50,10 @@ class MyGraphManager:
         self.csv_encoding = "utf-8"
         self.save_results = save_results
         self.round_decimals = 8
+        self.edge_anomaly_space = 0.05
+        self.edge_anomaly_distance = 0.50 - self.edge_anomaly_space
+        self.community_anomaly_space = 2 * self.edge_anomaly_space
+        self.community_anomaly_distance = 0.50 - self.community_anomaly_space
 
     def data_manipulation(self, given_text, join_string=None):
         text_list = self.pre_processor.data_pre_processing_nltk(given_text)
@@ -87,33 +90,40 @@ class MyGraphManager:
                 writer.writerow(dict_data[item])
 
     def result_write(self,
-                     values,
-                     bins,
+                     X,
+                     Y,
                      title,
                      x_label,
                      y_label,
-                     result_type=None,
-                     scatter_values=None):
+                     result_type="D"):
         f = None
         if self.save_results:
             f = plt.figure()
-        if result_type is None:
-            plt.hist(values, bins=bins)
-            plt.xticks((0, 1))
 
-        else:
-            plt.scatter(values, scatter_values)
+        if result_type == "D":
+            data = pd.DataFrame(Y, columns=X, index=["Positive", "Negative"])
+            ax = sns.heatmap(data, annot=True)
+            # plt.show()
 
-        if result_type is not None:
+        if result_type == "S":
+            plt.scatter(X, Y)
             x = np.array([0, 1])
             y = np.array([0, 1])
             plt.plot(x, y, color="r")
-            x1 = np.array([0, 0.55])
-            y1 = np.array([0.45, 1])
-            plt.plot(x1, y1, linestyle="dashed", color="m")
-            x2 = np.array([0.45, 1])
-            y2 = np.array([0, 0.55])
-            plt.plot(x2, y2, linestyle="dashed", color="m")
+
+            cx1 = np.array([0, 1 - self.community_anomaly_distance])
+            cy1 = np.array([self.community_anomaly_distance, 1])
+            plt.plot(cx1, cy1, linestyle="dashed", color="m")
+            cx2 = np.array([self.community_anomaly_distance, 1])
+            cy2 = np.array([0, 1 - self.community_anomaly_distance])
+            plt.plot(cx2, cy2, linestyle="dashed", color="m")
+
+            ex1 = np.array([0, 1 - self.edge_anomaly_distance])
+            ey1 = np.array([self.edge_anomaly_distance, 1])
+            plt.plot(ex1, ey1, linestyle="dotted", color="c")
+            ex2 = np.array([self.edge_anomaly_distance, 1])
+            ey2 = np.array([0, 1 - self.edge_anomaly_distance])
+            plt.plot(ex2, ey2, linestyle="dotted", color="c")
 
         plt.title(title)
         plt.xlabel(x_label)
@@ -356,10 +366,7 @@ class MyGraphManager:
         return self.get_jaccard_similarity_between_two_strings([row["text_source"], row["text_target"]])
 
     def df_anomaler(self, row):
-        # f1x = decision_function_edges(row["weight"], 0.45)
-        # f2x = decision_function_edges(row["weight"], -0.45)
-        jaccard_anomaly_score = math.fabs(row["jaccard"] - row["weight"])
-
+        jaccard_anomaly_score = row["jaccard"] - row["weight"]
         return pd.Series([row["id"], row["source"], row["target"], jaccard_anomaly_score, row["jaccard"], row["weight"]
                           ], index=["id", "source", "target", "jaccard_anomaly_score", "jaccard_similarity_score", "weight"])
 
@@ -428,12 +435,22 @@ class MyGraphManager:
                 del df["target"]
                 hash_map_jaccard_anomalies = df.to_dict("index")
                 self.csv_write(self.directory_path.__str__() + "/results/jacardAnomalies.csv", ["id", "jaccard_anomaly_score", "jaccard_similarity_score", "weight"], hash_map_jaccard_anomalies)
+
+                jaccard_anomaly_count_pos = df["jaccard_anomaly_score"][df["jaccard_anomaly_score"] > self.edge_anomaly_distance].count()
+                jaccard_anomaly_count_neg = df["jaccard_anomaly_score"][df["jaccard_anomaly_score"] < -1 * self.edge_anomaly_distance].count()
+                jaccard_non_anomaly_count_pos = df["jaccard_anomaly_score"][(df["jaccard_anomaly_score"] <= self.edge_anomaly_distance) & (df["jaccard_anomaly_score"] > 0.0)].count()
+                jaccard_non_anomaly_count_neg = df["jaccard_anomaly_score"][(df["jaccard_anomaly_score"] > -1 * self.edge_anomaly_distance) & (df["jaccard_anomaly_score"] <= 0.0)].count()
+                distribution_heatmap = [
+                    [jaccard_non_anomaly_count_pos, jaccard_anomaly_count_pos],
+                    [jaccard_non_anomaly_count_neg, jaccard_anomaly_count_neg]
+                ]
+                jaccard_anomalies = df_eliminated["jaccard_anomaly_score"].tolist()
                 jaccard_similarities = df["jaccard_similarity_score"].tolist()
                 jaccard_weights = df["weight"].tolist()
                 df = None
 
-                self.result_write(df_eliminated["jaccard_anomaly_score"], 3, "Jaccard Anomaly Community Distribution", "Edges", "Count")
-                self.result_write(jaccard_weights, 100, "Weights-Similarities", "Weights", "Similarities", "scatter", jaccard_similarities)
+                self.result_write(["Normal", "Anomalies"], distribution_heatmap, "Jaccard Anomaly Community Distribution", "", "", "D")
+                self.result_write(jaccard_weights, jaccard_similarities, "Weights-Similarities", "Weights", "Similarities", "S")
 
                 init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
                 print(init_time)
@@ -448,7 +465,7 @@ class MyGraphManager:
                 nodes_set = set(nodes_set)
                 for node in nodes_set:
                     df_node_group = df_eliminated[(df_eliminated["source"] == node) | (df_eliminated["target"] == node)]
-                    df_node_group_filtered = df_node_group[(df_node_group["jaccard_anomaly_score"].values > 0.5)]
+                    df_node_group_filtered = df_node_group[(df_node_group["jaccard_anomaly_score"].values > self.edge_anomaly_distance)]
                     if len(df_node_group_filtered) > 0:
                         count_of_all_edges = len(df_node_group)
                         count_of_anomaly_edges = len(df_node_group_filtered)
@@ -458,7 +475,6 @@ class MyGraphManager:
                         count_factor_of_non_anomaly_edges = count_of_non_anomaly_edges / count_of_all_edges
 
                         wjFactor = decision_function_nodes(count_factor_of_anomaly_edges)
-                        # anomaly_sum_of_edges = df_node_group_filtered["jaccard_anomaly_score"].mean(axis=0, skipna=True)
                         node_anomaly_score = wjFactor * count_factor_of_non_anomaly_edges - count_factor_of_anomaly_edges
 
                         if node_anomaly_score < 0:
@@ -507,7 +523,7 @@ class MyGraphManager:
                         print("Anomaly Score: No Edges")
                     else:
                         community_anomaly_score = round(item["jaccard_anomaly_score"].mean(), self.round_decimals)
-                        if community_anomaly_score > 0.19:
+                        if community_anomaly_score > self.community_anomaly_distance:
                             print("--------------------")
                             print("Community: " + str(list(distinct_communities_distribution)[index]))
                             print("Anomaly Score: " + str(community_anomaly_score))
@@ -527,6 +543,7 @@ class MyGraphManager:
                 else:
                     print("Anomaly Score: " + str(
                         round(sub_graph_edges["jaccard_anomaly_score"].mean(), self.round_decimals)))
+                    print("Anomaly Threshold: " + str(self.community_anomaly_distance))
                 print(init_time)
                 print("Query Results Ends")
 

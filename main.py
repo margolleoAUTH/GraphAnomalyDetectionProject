@@ -16,13 +16,7 @@ if __name__ == "__main__":
         if execution_sequence_array[1] == "1":
             myGraphManager.manipulate_profiles()
         if execution_sequence_array[2] == "1":
-            myGraphManager.manipulate_results([
-                               5408146310918564864,
-                               2426748040178243072,
-                               -4161520413540749824,
-                               8362434912111110144,
-                               7970105971945019392
-                           ], False, False, True)
+            myGraphManager.manipulate_results([], True, False, False)
     except Exception as error:
         print("===================================================================================================")
         print(datetime.datetime.now().strftime("%D %H:%M:%S"))
