@@ -5,10 +5,17 @@ import pandas as pd
 import json
 import numpy as np
 import os
+import hashlib
 from itertools import combinations
 from sklearn.feature_extraction.text import TfidfVectorizer
 from pathlib import Path
 from myPreProcessor import MyPreProcessor
+
+
+def my_hash(value):
+    encoded = value.encode()
+    result = hashlib.sha1(encoded)
+    return result.hexdigest()
 
 
 class MyGraphManager:
@@ -17,7 +24,9 @@ class MyGraphManager:
                  year_directory_path,
                  global_metadata_directory,
                  global_metadata_file,
-                 top_n_tf_idf_limit, year, file_manager):
+                 top_n_tf_idf_limit,
+                 year,
+                 file_manager):
         self.year = year
         self.year_directory_path = year_directory_path
         self.jsons_directory_path = Path(self.year_directory_path.__str__() + "/jsons")
@@ -56,15 +65,22 @@ class MyGraphManager:
 
             df = df[(pd.notna(df["publish_time"]))]
             df = df[["publish_time", "pdf_json_files", "pmc_json_files"]]
+
             df["publish_time"] = df["publish_time"].apply(lambda x: dateutil.parser.parse(str(x)).year)
             df_unfiltered_index = str(len(df.index))
 
             df_filtered = df[(pd.notna(df["pdf_json_files"])) | (pd.notna(df["pmc_json_files"]))]
             df_filtered_index = str(len(df_filtered.index))
 
-            df_filtered = df_filtered.groupby("publish_time")
+            if "_" in self.year:
+                years = self.year.split("_")
+                start_year = int(years[0])
+                end_year = int(years[1])
+                years = list(range(start_year, end_year + 1))
+            else:
+                years = [int(self.year)]
 
-            grouped_df = df_filtered.get_group(self.year)
+            grouped_df = df_filtered[df_filtered["publish_time"].isin(years)]
             df_grouped_index = str(len(grouped_df.index))
 
             paper_iteration_index = 0
@@ -102,7 +118,7 @@ class MyGraphManager:
 
                         paper_text = data_pdf["metadata"]["title"]
                         if len(paper_text) == 0:
-                            paper_text = data_pdf["metadata"]["title"]
+                            paper_text = data_pcm["metadata"]["title"]
 
                         paragraphs = data_pdf["body_text"]
                         paragraphs_pdf = ""
@@ -129,48 +145,31 @@ class MyGraphManager:
                     if paper_text_clear != "":
                         set_of_jsons = {json.dumps(d, sort_keys=True) for d in authors}
                         authors = [json.loads(t) for t in set_of_jsons]
-                        # {
-                        #     "first": "Juan-Ignacio",
-                        #     "middle": [],
-                        #     "last": "Al\u00f3s",
-                        #     "suffix": "",
-                        #     "affiliation": {
-                        #         "laboratory": "",
-                        #         "institution": "Hospital Universitario de Getafe",
-                        #         "location": {
-                        #             "settlement": "Getafe, Madrid",
-                        #             "country": "Espa\u00f1a"
-                        #         }
-                        #     },
-                        #     "email": ""
-                        # },
                         for author in authors:
-                            if author["first"] == "Juan-Ignacio":
-                                print("pause")
                             if len(author["middle"]) == 0:
                                 author_text_clear = author["first"] + author["last"]
                             else:
                                 middle = "".join([str(element) for element in author["middle"]])
                                 author_text_clear = author["first"] + middle + author["last"]
-                            author_text_clear = self.data_manipulation(author_text_clear, " ").strip()
-
+                            author_text_clear = self.data_manipulation(author_text_clear, "").strip()
+                            if author_text_clear == "nan":
+                                author_text_clear = "not_a_name"
                             if author_text_clear != "" and (author_text_clear not in authors_as_list):
                                 authors_as_list.append(author_text_clear)
-                                key = hash(author_text_clear)
-
+                                key = my_hash(author_text_clear)
                                 if key not in hash_map_nodes:
                                     hash_map_nodes[key] = {
-                                        "id": str(key),
+                                        "id": key,
                                         "name": author_text_clear,
                                         "length": len(paper_text_clear),
                                         "papers_array": [{"paper_id_pdf": data_pdf["paper_id"], "paper_id_pcm": data_pcm["paper_id"], "text": paper_text_clear}]
                                     }
-                                    with open(self.jsons_directory_path.__str__() + "/" + str(key) + ".txt", "w") as json_file:
+                                    with open(self.jsons_directory_path.__str__() + "/" + key + ".txt", "w") as json_file:
                                         json.dump(hash_map_nodes[key]["papers_array"], json_file)
                                 else:
                                     hash_map_nodes[key]["length"] += len(paper_text_clear)
                                     hash_map_nodes[key]["papers_array"].append({"paper_id_pdf": data_pdf["paper_id"], "paper_id_pcm": data_pcm["paper_id"], "text": paper_text_clear})
-                                    with open(self.jsons_directory_path.__str__() + "/" + str(key) + ".txt", "w") as json_file:
+                                    with open(self.jsons_directory_path.__str__() + "/" + key + ".txt", "w") as json_file:
                                         json.dump(hash_map_nodes[key]["papers_array"], json_file)
 
                             print("Status: " + "Authors(Nodes) Paper's Prepared")
@@ -182,19 +181,17 @@ class MyGraphManager:
                         else:
 
                             authors_as_list.sort()
-
                             authors_r_subset = list(combinations(authors_as_list, 2))
-
                             print("Status: " + "Author-Pairs Number is " + str(len(authors_r_subset)))
 
                             for authors_pair in authors_r_subset:
-                                hashed_author_source = hash(authors_pair[0])
-                                hashed_author_target = hash(authors_pair[1])
+                                hashed_author_source = my_hash(authors_pair[0])
+                                hashed_author_target = my_hash(authors_pair[1])
                                 if hashed_author_source != hashed_author_target:
-                                    key = hash(str(hashed_author_source) + str(hashed_author_target))
+                                    key = my_hash(str(hashed_author_source) + str(hashed_author_target))
                                     if key not in hash_map_edges:
                                         hash_map_edges[key] = {
-                                            "id": str(key),
+                                            "id": key,
                                             "source": str(hashed_author_source),
                                             "target": str(hashed_author_target),
                                             "weight": 1,
@@ -212,8 +209,8 @@ class MyGraphManager:
             df_hash_map_nodes = df_hash_map_nodes.drop("papers_array")
             hash_map_nodes = df_hash_map_nodes.to_dict()
 
-            self.file_manager.csv_write(self.year_directory_path.__str__() + "/gephiNodes.csv", ["id", "name", "length"], hash_map_nodes)
-            self.file_manager.csv_write(self.year_directory_path.__str__() + "/gephiEdges.csv", ["id", "source", "target", "weight", "length", "undirected"], hash_map_edges)
+            self.file_manager.dict_csv_write(self.year_directory_path.__str__() + "/gephiNodes.csv", ["id", "name", "length"], hash_map_nodes)
+            self.file_manager.dict_csv_write(self.year_directory_path.__str__() + "/gephiEdges.csv", ["id", "source", "target", "weight", "length", "undirected"], hash_map_edges)
             print("========================\nmanipulate_data: Run time details")
             print("Unfiltered Index: " + df_unfiltered_index)
             print("Filtered Index: " + df_filtered_index)
@@ -225,7 +222,7 @@ class MyGraphManager:
 
         except Exception as error:
             print("===================================================================================================")
-            print("Error on_main: %s" % str(error))
+            print("Error: %s" % str(error))
             print("===================================================================================================")
             traceback.print_exc()
             print("===================================================================================================")
@@ -242,18 +239,18 @@ class MyGraphManager:
             init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
             files = os.listdir(self.jsons_directory_path.__str__())
             for key in files:
-                with open(self.jsons_directory_path.__str__() + "/" + str(key)) as json_file:
+                with open(self.jsons_directory_path.__str__() + "/" + key) as json_file:
                     json_array = json.load(json_file)
-                    if json_array[0]["text"] == "":
-                        profile_tf_idf = ""
-                    else:
-                        papers_array = []
-                        for item in json_array:
-                            papers_array.append(item["text"])
-                        self.tf_idf_vectorizer.fit_transform(papers_array)
-                        feature_array = np.array(self.tf_idf_vectorizer.get_feature_names())
-                        profile_tf_idf = " ".join(feature_array)
-                    with open(self.profiles_directory_path.__str__() + "/" + str(key), "w") as profile_file:
+                    # if json_array[0]["text"] == "":
+                    #     profile_tf_idf = ""
+                    # else:
+                    papers_array = []
+                    for item in json_array:
+                        papers_array.append(item["text"])
+                    self.tf_idf_vectorizer.fit_transform(papers_array)
+                    feature_array = np.array(self.tf_idf_vectorizer.get_feature_names())
+                    profile_tf_idf = " ".join(feature_array)
+                    with open(self.profiles_directory_path.__str__() + "/" + key, "w") as profile_file:
                         json.dump({"text": profile_tf_idf}, profile_file)
             end_time = datetime.datetime.now().strftime("%D %H:%M:%S")
 
@@ -264,16 +261,12 @@ class MyGraphManager:
 
         except Exception as error:
             print("===================================================================================================")
-            print("Error on_main: %s" % str(error))
+            print("Error: %s" % str(error))
             print("===================================================================================================")
             traceback.print_exc()
             print("===================================================================================================")
             print(init_time)
             print(end_time)
-
-
-
-
 
 
 
