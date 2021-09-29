@@ -13,6 +13,7 @@ from pathlib import Path
 from collections import defaultdict
 from myFileManager import MyFileManager
 from sklearn.feature_extraction.text import TfidfVectorizer
+from itertools import combinations
 
 
 class MyResultManager:
@@ -22,7 +23,6 @@ class MyResultManager:
         self.profiles_directory_path = Path(self.year_directory_path.__str__() + "/profiles")
         self.results_directory_path = Path(self.year_directory_path.__str__() + "/results")
         self.save_results = save_results
-        self.partition = None
         self.round_decimals = 8
         self.edge_anomaly_distance = 0.45995
         self.file_manager = MyFileManager()
@@ -38,13 +38,13 @@ class MyResultManager:
     def jaccard_similarity(self, list1, list2):
         intersection = len(list(set(list1).intersection(list2)))
         union = (len(list1) + len(list2)) - intersection
-        return float(intersection) / union
+        return round(float(intersection) / union, self.round_decimals)
 
     def get_jaccard_similarity_between_two_strings(self, strings_array):
         vector0 = strings_array[0].split(" ")
         vector1 = strings_array[1].split(" ")
         similarity_score = self.jaccard_similarity(vector0, vector1)
-        return round(similarity_score, self.round_decimals)
+        return similarity_score
 
     def result_write(self,
                      X,
@@ -255,6 +255,7 @@ class MyResultManager:
         init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
         print(init_time)
 
+        anomaly_nodes = []
         count_of_total_edges = len(df_eliminated.index)
 
         myfile = open(self.results_directory_path.__str__() + "\\NodeResults.txt", "w")
@@ -285,14 +286,16 @@ class MyResultManager:
                 myfile.write("Node Non Anomaly Edge Count: " + str(count_of_non_anomaly_edges) + "\n")
                 myfile.write("Node Anomaly Edge Count: " + str(count_of_anomaly_edges) + "\n")
                 myfile.write("Node Anomaly Score: " + str(node_anomaly_score) + "\n")
+                anomaly_nodes.append(str(node))
 
         myfile.close()
         dfn.to_hdf(self.results_directory_path.__str__() + "/dfn.h5", "dfn", format="table")
         init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
         print(init_time)
         print("Nodes Results Ends")
+        return anomaly_nodes
 
-    def df_community_wrapper(self, df_eliminated, community_type):
+    def df_community_wrapper(self, partition, df_eliminated, community_type):
         print("========================\nCommunities Results Starts")
         init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
         print(init_time)
@@ -301,7 +304,7 @@ class MyResultManager:
 
         communities_edges_set = []
         hash_map_community_members = defaultdict(list)
-        for key, value in sorted(self.partition.items()):
+        for key, value in sorted(partition.items()):
             hash_map_community_members[value].append(key)
         for item in hash_map_community_members:
             community_members = hash_map_community_members[item]
@@ -314,18 +317,20 @@ class MyResultManager:
         init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
         print(init_time)
         print("Communities Results Ends")
-        if not math.isnan(community_type):
+        if community_type.isnumeric():
             return result
 
     def df_community(self, communities_edges_set, hash_map_community_members, count_of_total_edges, community_type):
         to_return = False
-        if not math.isnan(community_type):
+        year = ""
+        if community_type.isnumeric():
+            year = community_type
             to_return = True
             community_type = str(community_type) + "-Community"
 
         myfile = open(self.results_directory_path.__str__() + "\\" + community_type + "Results.txt", "w")
 
-        count_of_anomaly_communities = 0
+        anomaly_communities = []
         community_distribution = 0
         anomaly_community_distribution = []
         non_anomaly_community_distribution = []
@@ -353,8 +358,13 @@ class MyResultManager:
                     myfile.write(community_type + ": " + community + "\n")
                     myfile.write("Anomaly Score: " + str(community_anomaly_score) + "\n")
 
-                if community_anomaly_score:
-                    count_of_anomaly_communities = count_of_anomaly_communities + 1
+                    nodes_set = set(item["source"].tolist() + item["target"].tolist())
+                    anomaly_communities.append({
+                        "community_id": community,
+                        "nodes_set": nodes_set,
+                        "score": community_anomaly_score,
+                        "year": year
+                    })
 
         myfile.close()
         if community_distribution > 0:
@@ -362,19 +372,13 @@ class MyResultManager:
             distribution_set = [non_anomaly_community_distribution, anomaly_community_distribution]
             self.result_write(community_distribution, distribution_set, "Jaccard Anomaly " + community_type +
                               " Distribution", "", "", "D")
-
         if to_return:
-            return count_of_anomaly_communities
+            return anomaly_communities
 
     def manipulate_results(self,
                            get_anomaly_edges=False,
                            get_anomaly_nodes=False,
-                           get_anomaly_communities=False,
-                           sub_graph_nodes=None):
-
-        if sub_graph_nodes is None:
-            sub_graph_nodes = []
-
+                           get_anomaly_communities=False):
         try:
             self.file_manager.directory_manipulation(self.results_directory_path)
             df = pd.read_csv(self.year_directory_path.__str__() + "/gephiNodes.csv")
@@ -410,31 +414,12 @@ class MyResultManager:
                 print(init_time)
 
                 graph = nx.from_pandas_edgelist(df_eliminated, "source", "target", ["jaccard_anomaly_score"])
-                self.partition = community_louvain.best_partition(graph, randomize=False)
-                self.df_community_wrapper(df_eliminated, "jaccard_anomaly_score", "Community")
+                partition = community_louvain.best_partition(graph, randomize=False)
+                self.df_community_wrapper(partition, df_eliminated, "jaccard_anomaly_score", "Community")
 
                 init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
                 print(init_time)
                 print("Communities Results Ends")
-
-            # if len(sub_graph_nodes) != 0:
-            #     df = df[df["source"].isin(sub_graph_nodes) | df["target"].isin(sub_graph_nodes)]
-            #     df_eliminated = df_eliminated[df_eliminated["source"].isin(sub_graph_nodes) | df_eliminated["target"].isin(sub_graph_nodes)]
-            #     print("========================\nQuery Results Starts")
-            #     init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
-            #     print(init_time)
-            #
-            #     sub_graph_edges = df_eliminated[df_eliminated["source"].isin(
-            #         sub_graph_nodes) & df_eliminated["target"].isin(sub_graph_nodes)]
-            #     communities_edges_set = [sub_graph_edges]
-            #     hash_map_community_members = defaultdict(list)
-            #     hash_map_community_members[0].append(sub_graph_nodes)
-            #
-            #     self.df_community(communities_edges_set, hash_map_community_members, "Sub Graph")
-            #
-            #     init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
-            #     print(init_time)
-            #     print("Query Results Ends")
 
         except Exception as error:
             print("===================================================================================================")
@@ -483,11 +468,6 @@ class MyResultManager:
             edges = pd.concat([edges.set_index("id"), temp_edges.set_index("id")]).reset_index()
             edges = edges.groupby(["id", "source", "target"]).sum().reset_index()
 
-            # duplicate = edges[edges.index.duplicated(keep=False)]
-            # res1 = edges.loc[edges["id"] == "f91fc7021139f2b23ed1781d16479ce934b57998"]
-            # res2 = temp_edges.loc[temp_edges["id"] == "f91fc7021139f2b23ed1781d16479ce934b57998"]
-            # res3 = edges.loc[edges["id"] == "f91fc7021139f2b23ed1781d16479ce934b57998"]
-
             hash_map_nodes = nodes.set_index("id").T.to_dict()
             df = edges.astype("category")
 
@@ -508,36 +488,94 @@ class MyResultManager:
         print(init_time)
         print("Results Preparation Ends")
 
-    def manipulate_time_results(self, start_year, end_year):
+    def manipulate_time_results(self, start_year, end_year, sub_graph_nodes=[]):
         root_results_directory_path = self.results_directory_path.__str__()
         count_of_anomaly_communities_list = []
         df_results_eliminated = pd.DataFrame()
+        previous_df_eliminated = None
+        previous_partition = None
+        df_eliminated = None
+        hash_map_evolution = {}
+        whole_anomaly_communities = []
 
         for year in range(start_year, end_year + 1):
+
             self.results_directory_path = Path(root_results_directory_path + "/" + str(year))
             self.file_manager.directory_manipulation(self.results_directory_path)
 
             df = pd.read_hdf(root_results_directory_path + "/df_" + str(start_year) + "_" + str(year) + ".h5", "df")
+
+            if df_eliminated is not None:
+                previous_df_eliminated = df_eliminated
 
             df_scores = self.df_scores_wrapper(df)
             df_prime = df_scores[0]
             df_eliminated = df_scores[1]
 
             self.df_edges_wrapper(df_prime)
-            self.df_nodes_wrapper(df_eliminated)
+            anomaly_nodes = self.df_nodes_wrapper(df_eliminated)
+
+            if previous_partition is not None:
+                previous_nodes_set = set(previous_df_eliminated["source"].tolist() + previous_df_eliminated["target"].tolist())
+                nodes_set = set(df_eliminated["source"].tolist() + df_eliminated["target"].tolist())
+                new_nodes = nodes_set - previous_nodes_set
+                last_community = max(previous_partition.values())
+
+                for index, node in enumerate(new_nodes):
+                    previous_partition[node] = last_community + 1 + index
 
             graph = nx.from_pandas_edgelist(df_eliminated, "source", "target", ["jaccard_anomaly_score"])
-            self.partition = community_louvain.best_partition(graph, randomize=False)
-            count_of_anomaly_communities = self.df_community_wrapper(df_eliminated, year)
-            count_of_anomaly_communities_list.append(count_of_anomaly_communities)
+            partition = community_louvain.best_partition(graph, partition=previous_partition, random_state=0)
+            previous_partition = partition
 
-            del df_eliminated["source"]
-            del df_eliminated["target"]
+            anomaly_communities = self.df_community_wrapper(partition, df_eliminated, str(year))
+
+            for item in anomaly_communities:
+                whole_anomaly_communities.append(item)
+
+            for community in anomaly_communities:
+                community_id = community["community_id"]
+                node_set = community["nodes_set"]
+                score = community["score"]
+
+                for node in node_set:
+                    is_anomaly = node in anomaly_nodes
+                    if node not in hash_map_evolution:
+                        hash_map_evolution[node] = {}
+                    hash_map_evolution[node][year] = {
+                        "Node Anomaly Status": is_anomaly,
+                        "Community ID": community_id,
+                        "Community Anomaly Status": score
+                    }
+
+            count_of_anomaly_communities_list.append(len(anomaly_communities))
+
+            df_results_help = df_eliminated.copy()
+            del df_results_help["source"]
+            del df_results_help["target"]
             if df_results_eliminated.empty:
-                df_results_eliminated = df_eliminated
+                df_results_eliminated = df_results_help
             else:
-                df_results_eliminated = df_results_eliminated.merge(df_eliminated, on="id", how="outer")
+                df_results_eliminated = df_results_eliminated.merge(df_results_help, on="id", how="outer")
             df_results_eliminated.columns = [*df_results_eliminated.columns[:-1], str(year)]
+
+            if len(sub_graph_nodes) > 0:
+                print("========================\nQuery Results Starts")
+                init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
+                print(init_time)
+
+                self.results_directory_path = Path(root_results_directory_path)
+                sub_graph_edges = df_eliminated[df_eliminated["source"].isin(sub_graph_nodes) &
+                                                df_eliminated["target"].isin(sub_graph_nodes)]
+                communities_edges_set = [sub_graph_edges]
+                hash_map_community_members = defaultdict(list)
+                hash_map_community_members[0].append(sub_graph_nodes)
+                community_type = str(year) + "-SubGraph"
+                self.df_community(communities_edges_set, hash_map_community_members, len(sub_graph_edges.index), community_type)
+
+                init_time = datetime.datetime.now().strftime("%D %H:%M:%S")
+                print(init_time)
+                print("Query Results Ends")
 
         df = df_results_eliminated.apply(self.df_edge_anomaler_derivative, axis=1)
         result = pd.concat([df_results_eliminated, df], axis=1)
@@ -570,6 +608,33 @@ class MyResultManager:
         result = pd.DataFrame([count_of_anomaly_communities_list], columns=columns)
         self.file_manager.df_csv_write(self.year_directory_path.__str__() + "/communities_results.csv", result)
 
+        result = pd.DataFrame.from_dict({(i, j): hash_map_evolution[i][j]
+                                         for i in hash_map_evolution.keys()
+                                         for j in hash_map_evolution[i].keys()}, orient="index").reset_index()
+        result = result.rename(columns={"level_0": "Node Id"})
+        result = result.rename(columns={"level_1": "Year"})
+        self.file_manager.df_csv_write(self.year_directory_path.__str__() + "/nodes_communities_results.csv", result)
+
+        data = []
+        communities_subset = list(combinations(whole_anomaly_communities, 2))
+        for index, community_pair in enumerate(communities_subset):
+            nodes_set0 = community_pair[0]["nodes_set"]
+            community_id0 = community_pair[0]["community_id"]
+            year0 = community_pair[0]["year"]
+            nodes_set1 = community_pair[1]["nodes_set"]
+            community_id1 = community_pair[1]["community_id"]
+            year1 = community_pair[1]["year"]
+            score = self.jaccard_similarity(list(nodes_set0), list(nodes_set1))
+            data.append({
+                "id": str(index),
+                "source": community_id0 + " (" + year0 + ")",
+                "target": community_id1 + " (" + year1 + ")",
+                "score": score
+            })
+
+        result = pd.DataFrame(data)
+        self.file_manager.df_csv_write(self.year_directory_path.__str__() + "/nodes_communities_similarities.csv", result)
+
         # data = {33781-506-130
         #     "id": ["0", "1", "2"],
         #     "source": [0, 1, 1],
@@ -601,3 +666,4 @@ class MyResultManager:
         # labels = nx.get_edge_attributes(G, "weight")
         # nx.draw_networkx_edge_labels(G, pos, edge_labels=labels)
         # plt.show()
+
